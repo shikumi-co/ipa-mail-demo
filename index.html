@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IPA楽々メール送信（モック）</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet" />
+    <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+    <script>
+      // 色・文字は bukken-mail の docs/DESIGN.md（src/app/globals.css の @theme）と同じ意味の名前
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              primary: { DEFAULT: "#23406d", hover: "#1b3155", subtle: "#f1f5fa", muted: "#e2eaf4" },
+              bg: "#f5f6f8",
+              surface: { DEFAULT: "#ffffff", subtle: "#f0f2f5" },
+              line: { DEFAULT: "#e3e6eb", strong: "#cdd2da" },
+              ink: { DEFAULT: "#1c2533", soft: "#3a4250" },
+              muted: "#5e6674",
+              faint: "#8b93a1",
+              success: { DEFAULT: "#15803d", subtle: "#ecf8f0", line: "#b7e4c7" },
+              warning: { DEFAULT: "#b45309", subtle: "#fff7e8", line: "#f6d9a8" },
+              danger: { DEFAULT: "#c42b2b", hover: "#a52222", subtle: "#fdf0f0", line: "#f3c4c4" },
+              info: { DEFAULT: "#1d5fc4", subtle: "#eef4fd", line: "#c3d7f5" },
+              line_app: "#06c755",
+            },
+            fontFamily: { sans: ['"Noto Sans JP"', "system-ui", "sans-serif"] },
+            fontSize: { "2xs": ["0.6875rem", "1rem"], display: ["1.875rem", "2.25rem"] },
+            boxShadow: { xs: "0 1px 1px rgb(16 24 40 / 0.04)", sm: "0 1px 2px rgb(16 24 40 / 0.05), 0 1px 3px rgb(16 24 40 / 0.04)" },
+          },
+        },
+      };
+    </script>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body class="bg-bg font-sans text-ink antialiased">
+    <div id="app"></div>
+    <div id="toast" class="pointer-events-none fixed inset-x-0 bottom-4 z-50 flex justify-center px-4"></div>
+    <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+    <script src="data.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
