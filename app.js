@@ -8,6 +8,31 @@ const D = JSON.parse(JSON.stringify(window.MOCK_DATA));
 const PREFS_ALL = ["北海道", "宮城県", "東京都", "神奈川県", "埼玉県", "千葉県", "愛知県", "京都府", "大阪府", "兵庫県", "福岡県"];
 const STRUCTURES = ["RC", "SRC", "S", "木造"];
 const KINDS = ["一棟マンション", "一棟アパート", "区分", "戸建", "土地"];
+/** レインズの PDF から読み取った体の見本（モック。本番は Claude が PDF を読んで項目に起こし、確信の低い項目は「要確認」にする） */
+const PDF_SAMPLES = [
+  { name: "（例）蒲田五丁目アパート", kind: "一棟アパート", pref: "東京都", city: "大田区", addr: "蒲田5-10-3", structure: "木造", year: 2008, uncertain: ["addr"] },
+  { name: "（例）天神南レジデンス", kind: "一棟マンション", pref: "福岡県", city: "福岡市中央区", addr: "渡辺通2-4-6", structure: "RC", year: 2015, uncertain: [] },
+  { name: "（例）堺筋本町ビル 5F", kind: "区分", pref: "大阪府", city: "大阪市中央区", addr: "本町1-3-9", structure: "SRC", year: 1998, uncertain: ["structure"] },
+];
+const PDF_FIELD_LABELS = { name: "物件名", kind: "種別", pref: "都道府県", city: "市区町村", addr: "番地", structure: "構造", year: "築年数" };
+function nextPropertyId() { return `p${String(D.properties.length + 1).padStart(2, "0")}`; }
+function driveFolder() { return `物件概要書 / ${D.today.slice(0, 7)}`; }
+/** PDF を受け取った体で「読み取り中」→ 項目を埋めた登録フォームへ（1.4 秒の待ちは本番の読み取りの代わり） */
+function startPdfReading(fileName, size, sample) {
+  const id = nextPropertyId();
+  const driveId = `1MOCK${id}${String(Math.abs(hashStr(fileName))).padStart(6, "0")}`;
+  ui.propNew = { stage: "reading", fileName, size, sample, extracted: null, docUrl: "", driveId };
+  render();
+  setTimeout(() => {
+    if (ui.propNew.stage !== "reading") return;
+    ui.propNew.extracted = PDF_SAMPLES[sample];
+    ui.propNew.docUrl = `https://drive.google.com/uc?export=download&id=${driveId}`;
+    ui.propNew.stage = "form";
+    render();
+  }, 1400);
+}
+function hashStr(str) { let h = 0; for (const ch of str) h = (h * 31 + ch.charCodeAt(0)) | 0; return h; }
+function fmtSize(bytes) { return bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`; }
 const PRICE_STEPS = [1000, 3000, 5000, 10000, 20000, 30000, 50000, 80000, 100000];
 const YIELD_STEPS = [4, 5, 6, 7, 8, 9, 10];
 const YEAR_STEPS = [1981, 1990, 2000, 2010, 2015, 2020];
@@ -61,6 +86,8 @@ const ui = {
   propStructure: "",
   contactQuery: "",
   wizPropQuery: "",
+  campaignQuery: "",
+  propNew: { stage: "upload", fileName: "", size: 0, sample: 0, extracted: null, docUrl: "", driveId: "" },
   contactArea: "",
   contactLine: "",
   lineStep: {},
@@ -290,8 +317,8 @@ function viewDashboard() {
   const today = D.today.slice(0, 10);
   const tomorrow = toLocal(new Date(new Date(D.today).getTime() + 86400000)).slice(0, 10);
   const schedules = [
-    ...D.campaigns.filter((m) => m.status === "scheduled").map((m) => ({ at: m.scheduledAt, label: m.subject, href: `#/campaigns/${m.id}`, kind: "配信" })),
-    ...D.followups.filter((f) => f.status === "scheduled").map((f) => ({ at: f.at, label: f.subject, href: `#/campaigns/${f.campaignId}`, kind: f.target === "unopened" ? "再配信（未開封者）" : "再配信（全員）" })),
+    ...D.campaigns.filter((m) => m.status === "scheduled").map((m) => ({ at: m.scheduledAt, label: `${m.no} ${m.subject}`, href: `#/campaigns/${m.id}`, kind: "配信" })),
+    ...D.followups.filter((f) => f.status === "scheduled").map((f) => ({ at: f.at, label: `${f.no} ${f.subject}`, href: `#/campaigns/${f.campaignId}`, kind: `再配信（${FOLLOWUP_TARGETS[f.target]}）` })),
   ].filter((s) => s.at.slice(0, 10) === today || s.at.slice(0, 10) === tomorrow).sort((a, b) => a.at.localeCompare(b.at));
   const openInq = D.inquiries.filter((q) => q.status === "未対応");
 
@@ -309,7 +336,7 @@ function viewDashboard() {
           .slice(0, 4)
           .map((m) => {
             const s = campaignStats(m);
-            return `<tr class="border-t border-line"><td class="max-w-[280px] truncate px-4 py-3 text-sm" title="${esc(m.subject)}">${linkName(`#/campaigns/${m.id}`, m.subject)}</td><td class="px-4 py-3 text-sm whitespace-nowrap tabular-nums">${dt(m.sentAt)}</td><td class="px-4 py-3 text-sm tabular-nums">${s.sent}</td><td class="px-4 py-3 text-sm whitespace-nowrap tabular-nums">${rateBar(s.rate)}</td><td class="px-4 py-3 text-sm tabular-nums">${s.inquiries}</td></tr>`;
+            return `<tr class="border-t border-line"><td class="max-w-[300px] truncate px-4 py-3 text-sm" title="${esc(m.subject)}">${noTag(m.no, "mr-1.5")}${linkName(`#/campaigns/${m.id}`, m.subject)}</td><td class="px-4 py-3 text-sm whitespace-nowrap tabular-nums">${dt(m.sentAt)}</td><td class="px-4 py-3 text-sm tabular-nums">${s.sent}</td><td class="px-4 py-3 text-sm whitespace-nowrap tabular-nums">${rateBar(s.rate)}</td><td class="px-4 py-3 text-sm tabular-nums">${s.inquiries}</td></tr>`;
           })
           .join("")}</tbody></table></div>`, "p-0")}</div>
       <div class="flex min-w-0 flex-col gap-4">
@@ -344,7 +371,7 @@ function viewProperties() {
   };
   list.sort(sorters[ui.propSort]);
   const areas = [...new Set(D.properties.map((p) => p.pref))];
-  return pageHeader("物件", { description: "配信する物件の一覧。概要書は PDF を添付せず URL で渡します", actions: btn("物件を登録", { variant: "primary", href: "#/properties/new", iconName: "plus" }) }) +
+  return pageHeader("物件", { description: "配信する物件の一覧。概要書の PDF は Google ドライブに置き、メールにはダウンロード URL を入れます", actions: btn("物件を登録", { variant: "primary", href: "#/properties/new", iconName: "plus" }) }) +
     mockBand("物件の項目（所在地・価格・利回り・築年・構造・種別・概要書の URL）と、価格・利回り・築年での並べ替え、エリア・構造での絞り込み", "1") +
     `<div class="mb-4 flex flex-wrap items-center gap-2">
       ${select("propArea", [["", "エリア: すべて"], ...areas.map((a) => [a, a])], ui.propArea, { cls: "!w-auto", data: 'data-change="propArea"' })}
@@ -360,24 +387,55 @@ function viewProperties() {
 }
 
 function viewPropertyNew() {
+  const st = ui.propNew;
+  const head = pageHeader("物件を登録", { back: { href: "#/properties", label: "物件の一覧" } }) +
+    mockBand("レインズの PDF を上げるだけで、物件名・種別・都道府県・市区町村・番地・構造・築年数が自動で入り、Google ドライブのダウンロード URL ができるか。価格・利回りも PDF から読み取るかは要確認", "1");
+  if (st.stage === "upload") {
+    return head + card(`<div class="flex flex-col items-center gap-3 py-6 text-center" data-dropzone>
+        <span class="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary-subtle text-primary">${icon("file-up", 28)}</span>
+        <h2 class="text-base font-bold">レインズの物件概要書（PDF）をここにドロップ</h2>
+        <p class="text-sm text-ink-soft">または <label class="cursor-pointer font-bold text-primary hover:underline">ファイルを選ぶ<input type="file" accept="application/pdf,.pdf" data-change="propPdf" class="sr-only"></label></p>
+        <p class="max-w-md text-xs text-muted">上げた PDF は Google ドライブ（${esc(driveFolder())}）に保存され、ダウンロード URL が自動で作られます。PDF から 物件名・種別・都道府県・市区町村・番地・構造・築年数 を読み取って、登録の項目に入れます。</p>
+        <div class="mt-2 flex flex-wrap justify-center gap-2">${PDF_SAMPLES.map((x, i) => btn(`見本の PDF で試す（${x.pref}）`, { action: "prop-pdf-sample", data: { i }, iconName: "file-text", size: "sm" })).join("")}</div>
+        <p class="text-xs text-muted">※ モックなので、どんな PDF を選んでも見本の項目が入ります。ファイルはどこにも送られません</p>
+      </div>`, "p-6 border-2 border-dashed border-line-strong");
+  }
+  if (st.stage === "reading") {
+    return head + card(`<div class="flex flex-col items-center gap-3 py-10 text-center">
+        <span class="h-8 w-8 animate-spin rounded-full border-4 border-primary-muted border-t-primary"></span>
+        <p class="text-sm font-bold">${esc(st.fileName)}（${fmtSize(st.size)}）を読み取っています…</p>
+        <p class="text-xs text-muted">Google ドライブに保存 → ダウンロード URL を生成 → PDF から項目を読み取り</p>
+      </div>`);
+  }
+  const x = st.extracted;
   const opt = (arr) => arr.map((v) => [v, v]);
-  return pageHeader("物件を登録", { back: { href: "#/properties", label: "物件の一覧" } }) +
-    mockBand("登録の項目が足りているか（PDF ではなく概要書の URL）。保存すると一覧と配信の作成で選べる", "1") +
-    card(`<form data-form="property" class="grid gap-4 md:grid-cols-2">
-      ${field("物件名", `<input name="name" required class="${FIELD} h-9" value="（例）新しい物件">`)}
-      ${field("種別", select("kind", opt(KINDS), "一棟アパート"))}
-      ${field("都道府県", select("pref", opt(PREFS_ALL), "東京都"))}
-      ${field("市区町村", `<input name="city" class="${FIELD} h-9" value="世田谷区">`)}
-      ${field("番地", `<input name="addr" class="${FIELD} h-9" value="（例）1-2-3">`)}
-      ${field("構造", select("structure", opt(STRUCTURES), "木造"))}
-      ${field("価格（万円）", `<input name="price" type="number" min="0" step="10" required class="${FIELD} h-9" value="8800">`)}
-      ${field("利回り（%）", `<input name="yield" type="number" min="0" step="0.1" required class="${FIELD} h-9" value="7.2">`)}
-      ${field("築年（西暦）", `<input name="year" type="number" min="1900" max="2030" class="${FIELD} h-9" value="2006">`)}
-      ${field("概要書の URL", `<input name="docUrl" type="url" class="${FIELD} h-9" value="https://example.com/docs/new-overview.pdf">`, "PDF は添付しません。メールにはこの URL のリンク（概要書を見る）が入ります")}
+  const auto = (key) => x.uncertain.includes(key) ? ` ${badge("要確認", "warning")}` : ` ${badge("PDF から", "success")}`;
+  const cls = (key) => `${FIELD} h-9 ${x.uncertain.includes(key) ? "border-warning-line bg-warning-subtle" : ""}`;
+  const age = D.today.slice(0, 4) - x.year;
+  const uncertainNote = x.uncertain.length ? note(`読み取りの確信が低い項目（${x.uncertain.map((k) => PDF_FIELD_LABELS[k]).join("・")}）は「要確認」にしています。PDF と見比べて直してください`, "warning") : note("読み取った項目を確かめて、価格・利回りを入れて登録してください", "info");
+  return head +
+    card(cardHeader("アップロードした PDF", { description: "Google ドライブに保存し、ダウンロード URL を自動で作りました" }) + `<div class="grid gap-3 px-5 py-4 text-sm">
+        <div class="flex flex-wrap items-center gap-2">${icon("file-text", 16, "text-primary")}<span class="font-bold">${esc(st.fileName)}</span><span class="text-muted">${fmtSize(st.size)}</span>${badge("Google ドライブに保存済み", "success", true)}</div>
+        <div class="grid gap-1 sm:grid-cols-[7rem_1fr]"><span class="text-xs font-bold text-ink-soft">保存先</span><span>Google ドライブ › ${esc(driveFolder())} › ${esc(st.fileName)}</span></div>
+        <div class="grid gap-1 sm:grid-cols-[7rem_1fr]"><span class="text-xs font-bold text-ink-soft">ダウンロード URL</span><span class="flex flex-wrap items-center gap-2"><code class="break-all rounded bg-surface-subtle px-2 py-1 text-xs">${esc(st.docUrl)}</code>${btn("コピー", { action: "copy-text", data: { text: st.docUrl }, iconName: "copy", size: "sm" })}</span></div>
+        <p class="text-xs text-muted">この URL が物件の「概要書」になり、メールの「概要書を見る」から開きます（モックの URL なので実際には開けません）。${btn("別の PDF にする", { action: "prop-pdf-again", size: "sm", extra: "ml-2" })}</p>
+      </div>`, "p-0 mb-4") +
+    card(cardHeader("PDF から読み取った項目", { description: "物件名・種別・都道府県・市区町村・番地・構造・築年数は自動で入っています" }) + `<div class="px-5 pt-4">${uncertainNote}</div><form data-form="property" class="grid gap-4 px-5 py-4 md:grid-cols-2">
+      <input type="hidden" name="docUrl" value="${esc(st.docUrl)}"><input type="hidden" name="pdfName" value="${esc(st.fileName)}">
+      ${field(`物件名${auto("name")}`, `<input name="name" required class="${cls("name")}" value="${esc(x.name)}">`)}
+      ${field(`種別${auto("kind")}`, select("kind", opt(KINDS), x.kind))}
+      ${field(`都道府県${auto("pref")}`, select("pref", opt(PREFS_ALL), x.pref))}
+      ${field(`市区町村${auto("city")}`, `<input name="city" class="${cls("city")}" value="${esc(x.city)}">`)}
+      ${field(`番地${auto("addr")}`, `<input name="addr" class="${cls("addr")}" value="${esc(x.addr)}">`)}
+      ${field(`構造${auto("structure")}`, select("structure", opt(STRUCTURES), x.structure, { cls: x.uncertain.includes("structure") ? "border-warning-line bg-warning-subtle" : "" }))}
+      ${field(`築年数${auto("year")}`, `<input name="year" type="number" min="1900" max="2030" class="${cls("year")}" value="${x.year}">`, `築 ${age} 年（${x.year} 年築。西暦で持ち、築年数は配信のときに計算します）`)}
+      <div class="hidden md:block"></div>
+      ${field("価格（万円）", `<input name="price" type="number" min="0" step="10" required class="${FIELD} h-9" placeholder="例: 8800">`, "手で入力（PDF から読み取るかは要確認）")}
+      ${field("利回り（%）", `<input name="yield" type="number" min="0" step="0.1" required class="${FIELD} h-9" placeholder="例: 7.2">`, "手で入力（PDF から読み取るかは要確認）")}
       <div class="md:col-span-2">${field("メモ（社内だけ）", `<textarea name="memo" rows="3" class="${FIELD} py-2"></textarea>`)}</div>
       <label class="flex items-center gap-2 text-sm md:col-span-2"><input type="checkbox" name="published" checked> 配信に使う（外すと配信の作成で選べない）</label>
       <div class="flex flex-wrap gap-2 md:col-span-2">${btn("登録する", { variant: "primary", type: "submit", iconName: "check" })}${btn("やめる", { href: "#/properties" })}</div>
-    </form>`);
+    </form>`, "p-0");
 }
 
 function viewProperty(id) {
@@ -392,7 +450,7 @@ function viewProperty(id) {
     ["築年", p.year ? `${p.year} 年` : "-"],
     ["価格", yen(p.price)],
     ["利回り", pct(p.yield)],
-    ["概要書", `<a href="${esc(p.docUrl)}" target="_blank" rel="noopener" class="inline-flex items-center gap-1 text-primary hover:underline break-all">${icon("external-link", 14)}${esc(p.docUrl)}</a>`],
+    ["概要書", `<a href="${esc(p.docUrl)}" target="_blank" rel="noopener" class="inline-flex items-center gap-1 text-primary hover:underline break-all">${icon("external-link", 14)}${esc(p.docUrl)}</a>${p.pdfName ? `<span class="mt-0.5 block text-xs text-muted">${esc(p.pdfName)}（Google ドライブ › ${esc(driveFolder())}）</span>` : ""}`],
     ["メモ", p.memo || "-"],
   ];
   return pageHeader(p.name, {
@@ -406,7 +464,7 @@ function viewProperty(id) {
       <div class="flex min-w-0 flex-col gap-4 lg:col-span-2">
         ${card(cardHeader(`希望条件に合う顧客（${fits.length} 人）`, { description: "顧客の希望条件（エリア・価格・利回り・築年・構造）にこの物件が当てはまる人。配信の作成の「自動で選ぶ」と同じ" }) +
           `<ul class="divide-y divide-line">${fits.map((c) => `<li class="flex flex-wrap items-center justify-between gap-2 px-5 py-2.5"><div class="min-w-0">${linkName(`#/contacts/${c.id}`, c.name)}<div class="text-xs text-muted">${esc(prefsSummary(c.prefs))}</div></div>${c.line.linked ? badge("LINE", "success") : ""}</li>`).join("") || '<li class="px-5 py-6 text-sm text-muted">合う顧客はいません</li>'}</ul>`, "p-0")}
-        ${card(cardHeader("この物件を入れた配信") + `<ul class="divide-y divide-line">${used.map((m) => `<li class="flex flex-wrap items-center gap-2 px-5 py-2.5">${campaignBadge(m)}${linkName(`#/campaigns/${m.id}`, m.subject)}<span class="text-xs text-muted tabular-nums">${dt(m.sentAt || m.scheduledAt)}</span></li>`).join("") || '<li class="px-5 py-6 text-sm text-muted">まだありません</li>'}</ul>`, "p-0")}
+        ${card(cardHeader("この物件を入れた配信") + `<ul class="divide-y divide-line">${used.map((m) => `<li class="flex flex-wrap items-center gap-2 px-5 py-2.5">${noTag(m.no)}${campaignBadge(m)}${linkName(`#/campaigns/${m.id}`, m.subject)}<span class="text-xs text-muted tabular-nums">${dt(m.sentAt || m.scheduledAt)}</span></li>`).join("") || '<li class="px-5 py-6 text-sm text-muted">まだありません</li>'}</ul>`, "p-0")}
       </div>
     </div>`;
 }
@@ -484,7 +542,7 @@ function viewContact(id) {
       </div>
       <div class="flex min-w-0 flex-col gap-4 lg:col-span-2">
         ${card(cardHeader("希望条件", { description: hist[0] ? `最後の変更: ${dt(hist[0].at)}（${hist[0].by === "self" ? "本人" : "社内"}）` : "" }) + dlRows(prefRows) + `<div class="border-t border-line px-5 py-3 text-xs text-muted">今の希望条件に合う物件: ${fitProps.length ? fitProps.map((p) => `<a href="#/properties/${p.id}" class="text-primary hover:underline">${esc(p.name)}</a>`).join("、") : "なし"}</div>`, "p-0")}
-        ${card(cardHeader(`開封の履歴（${o.opened} / ${o.sent} 通）`) + `<ul class="divide-y divide-line">${o.rows.map((x) => `<li class="flex flex-wrap items-center gap-2 px-5 py-2.5 text-sm">${x.r.openedAt ? badge(`開封 ${dt(x.r.openedAt)}`, "success", true) : badge("未開封", "neutral", true)}${linkName(`#/campaigns/${x.m.id}`, x.m.subject)}<a href="#/mail/${x.m.id}/${c.id}" class="ml-auto text-xs text-primary hover:underline">届いたメール</a></li>`).join("") || '<li class="px-5 py-6 text-sm text-muted">まだ送っていません</li>'}</ul>`, "p-0")}
+        ${card(cardHeader(`開封の履歴（${o.opened} / ${o.sent} 通）`) + `<ul class="divide-y divide-line">${o.rows.map((x) => `<li class="flex flex-wrap items-center gap-2 px-5 py-2.5 text-sm">${x.r.openedAt ? badge(`開封 ${dt(x.r.openedAt)}`, "success", true) : badge("未開封", "neutral", true)}${noTag(x.m.no)}${linkName(`#/campaigns/${x.m.id}`, x.m.subject)}<a href="#/mail/${x.m.id}/${c.id}" class="ml-auto text-xs text-primary hover:underline">届いたメール</a></li>`).join("") || '<li class="px-5 py-6 text-sm text-muted">まだ送っていません</li>'}</ul>`, "p-0")}
         ${card(cardHeader(`問合せの履歴（${inqs.length} 件）`) + `<ul class="divide-y divide-line">${inqs.map((q) => inquiryItem(q)).join("") || '<li class="px-5 py-6 text-sm text-muted">まだありません</li>'}</ul>`, "p-0")}
         ${card(cardHeader("希望条件の変更履歴") + `<ul class="divide-y divide-line">${hist.map((h) => `<li class="flex flex-wrap items-center gap-2 px-5 py-2.5 text-sm"><span class="text-xs text-muted tabular-nums">${dt(h.at)}</span>${h.by === "self" ? badge("本人が変更", "brand") : badge("社内で変更", "neutral")}<span>${esc(h.summary)}</span></li>`).join("") || '<li class="px-5 py-6 text-sm text-muted">まだありません</li>'}</ul>`, "p-0")}
       </div>
@@ -497,15 +555,21 @@ function dlRows(rows) {
 /* ------------------------------------------------------------------ 画面: 配信の一覧・詳細 */
 
 function viewCampaigns() {
-  const list = D.campaigns.slice().sort((a, b) => (b.sentAt || b.scheduledAt || "9").localeCompare(a.sentAt || a.scheduledAt || "9"));
-  return pageHeader("配信", { description: "物件の一斉送信。送信済み・予約・下書き", actions: btn("新規配信", { variant: "primary", href: "#/campaigns/new", iconName: "plus" }) }) +
-    mockBand("配信ごとの状態・送信数・開封率・問合せ・再配信の予約が一覧で分かるか", "3・4") +
+  const q = ui.campaignQuery.trim();
+  let list = D.campaigns.slice().sort((a, b) => (b.sentAt || b.scheduledAt || "9").localeCompare(a.sentAt || a.scheduledAt || "9"));
+  if (q) list = list.filter((m) => String(m.no).includes(q) || m.subject.includes(q) || m.propertyIds.some((pid) => prop(pid).name.includes(q)));
+  return pageHeader("配信", { description: "物件の一斉送信。送信済み・予約・下書き。配信には 7 桁の ID が付きます", actions: btn("新規配信", { variant: "primary", href: "#/campaigns/new", iconName: "plus" }) }) +
+    mockBand("配信ごとの ID・状態・送信数・開封率・問合せ・再配信の予約が一覧で分かるか。1 日に何百通も作っても ID で探せるか", "3・4") +
+    `<div class="mb-4 flex flex-wrap items-center gap-3">
+      <div class="relative">${icon("search", 16, "pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted")}<input data-input="campaignQuery" value="${esc(ui.campaignQuery)}" placeholder="ID・件名・物件名で検索" class="${FIELD} h-9 w-72 max-w-full !rounded-full pl-9"></div>
+      <span class="text-sm text-muted">${q ? `${list.length} 件 / ${D.campaigns.length} 件` : `${D.campaigns.length} 件`}</span></div>` +
     table(
-      [{ label: "件名" }, { label: "状態", td: "whitespace-nowrap" }, { label: "物件", td: "whitespace-nowrap tabular-nums" }, { label: "宛先", td: "whitespace-nowrap tabular-nums" }, { label: "開封率", td: "whitespace-nowrap tabular-nums" }, { label: "問合せ", td: "whitespace-nowrap tabular-nums" }, { label: "送信・予約", td: "whitespace-nowrap tabular-nums" }],
+      [{ label: "ID", td: "whitespace-nowrap" }, { label: "件名" }, { label: "状態", td: "whitespace-nowrap" }, { label: "物件", td: "whitespace-nowrap tabular-nums" }, { label: "宛先", td: "whitespace-nowrap tabular-nums" }, { label: "開封率", td: "whitespace-nowrap tabular-nums" }, { label: "問合せ", td: "whitespace-nowrap tabular-nums" }, { label: "送信・予約", td: "whitespace-nowrap tabular-nums" }],
       list.map((m) => {
         const s = campaignStats(m);
         return [
-          `${linkName(`#/campaigns/${m.id}`, m.subject)}${s.followups.length ? `<div class="mt-1">${badge(`再配信の予約 ${s.followups.length} 件`, "info")}</div>` : ""}`,
+          `<a href="#/campaigns/${m.id}" class="font-mono text-sm tabular-nums text-primary hover:underline">${m.no}</a>`,
+          `${linkName(`#/campaigns/${m.id}`, m.subject)}${s.followups.map((f) => `<div class="mt-1">${badge(`再配信の予約 ${f.no}（${dt(f.at)}）`, "info")}</div>`).join("")}`,
           campaignBadge(m),
           `${m.propertyIds.length} 件`,
           `${m.recipients.length} 人`,
@@ -514,7 +578,7 @@ function viewCampaigns() {
           dt(m.sentAt || m.scheduledAt),
         ];
       }),
-      { minW: "min-w-[880px]" },
+      { minW: "min-w-[960px]", empty: q ? `「${esc(q)}」に合う配信はありません` : "まだありません" },
     );
 }
 
@@ -540,9 +604,9 @@ function viewCampaign(id) {
       `<a href="#/mail/${m.id}/${c.id}" class="inline-flex items-center gap-1 text-sm text-primary hover:underline">${icon("mail", 14)}メールを見る</a>`,
     ];
   });
-  return pageHeader(m.subject, { back: { href: "#/campaigns", label: "配信の一覧" }, actions }) +
-    mockBand("送信数・開封数・開封率・問合せ・LINE 追加と、宛先ごとの開封／未開封。「再配信を予約」から未開封者だけに送れるか", "3・4・5") +
-    `<div class="mb-4 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-line bg-surface px-5 py-3 text-sm text-ink-soft shadow-sm">${campaignBadge(m)}
+  return pageHeader(m.subject, { back: { href: "#/campaigns", label: "配信の一覧" }, actions, description: `配信 ID ${noTag(m.no)}` }) +
+    mockBand("配信 ID・送信数・開封数・開封率・問合せ・LINE 追加と、宛先ごとの開封／未開封。「再配信を予約」から未開封者だけに送れるか", "3・4・5") +
+    `<div class="mb-4 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-line bg-surface px-5 py-3 text-sm text-ink-soft shadow-sm">${noTag(m.no)}${campaignBadge(m)}
       <span class="inline-flex items-center gap-1.5">${icon(m.status === "sent" ? "send" : "clock", 14, "text-muted")}${m.status === "sent" ? `送信 ${dt(m.sentAt)}` : m.status === "scheduled" ? `予約 ${dt(m.scheduledAt)}` : "下書き"}</span>
       <span class="inline-flex items-center gap-1.5">${icon("building-2", 14, "text-muted")}物件 ${m.propertyIds.map((pid) => `<a href="#/properties/${pid}" class="text-primary hover:underline">${esc(prop(pid).name)}</a>`).join("、")}</span>
       ${s.followups.length ? badge(`予約 ${s.followups.length} 件`, "info", true) : ""}</div>
@@ -561,12 +625,13 @@ function followupList(m) {
   return `<ul class="divide-y divide-line">${list
     .map((f) => {
       const n = followupTargets(m, f.target).length;
-      return `<li class="flex flex-wrap items-center gap-2 px-5 py-3 text-sm"><span class="inline-flex items-center gap-1 tabular-nums">${icon("clock", 14, "text-muted")}${dt(f.at)}</span>${badge(f.target === "unopened" ? `未開封者だけ ${n} 人` : `全員 ${n} 人`, "info")}<span class="min-w-0 flex-1 truncate" title="${esc(f.subject)}">${esc(f.subject)}</span>
+      return `<li class="flex flex-wrap items-center gap-2 px-5 py-3 text-sm"><span class="inline-flex items-center gap-1 tabular-nums">${icon("clock", 14, "text-muted")}${dt(f.at)}</span>${noTag(f.no)}${badge(`${FOLLOWUP_TARGETS[f.target]} ${n} 人`, "info")}<span class="min-w-0 flex-1 truncate" title="${esc(f.subject)}">${esc(f.subject)}</span>
         <span class="flex gap-2">${btn("編集", { size: "sm", href: `#/campaigns/${m.id}/followup?edit=${f.id}` })}${btn("取り消す", { size: "sm", action: "cancel-followup", data: { id: f.id } })}</span></li>`;
     })
     .join("") || '<li class="px-5 py-6 text-sm text-muted">予約はありません</li>'}</ul>`;
 }
-const followupTargets = (m, target) => (target === "unopened" ? m.recipients.filter((r) => !r.openedAt) : m.recipients).filter((r) => !contact(r.contactId).unsubscribed);
+const FOLLOWUP_TARGETS = { unopened: "未開封者だけ", opened: "開封者だけ", all: "全員" };
+const followupTargets = (m, target) => (target === "unopened" ? m.recipients.filter((r) => !r.openedAt) : target === "opened" ? m.recipients.filter((r) => r.openedAt) : m.recipients).filter((r) => !contact(r.contactId).unsubscribed);
 
 /* ------------------------------------------------------------------ 画面: シナリオ配信（再配信の予約） */
 
@@ -579,11 +644,13 @@ function viewFollowup(id, query) {
   const [date, time] = f.at.split("T");
   const nAll = followupTargets(m, "all").length;
   const nUn = followupTargets(m, "unopened").length;
-  return pageHeader(editing ? "再配信の予約を編集" : "再配信を予約", { back: { href: `#/campaigns/${m.id}`, label: "配信の詳細" }, description: `もとの配信: ${esc(m.subject)}（${dt(m.sentAt)} 送信・開封 ${campaignStats(m).opened} / ${m.recipients.length}）` }) +
-    mockBand("1 回目の配信をもとに、対象（全員／未開封者だけ）・日時・件名と本文を変えて予約できるか。予約は一覧から取り消し・編集できるか", "4・5") +
+  const nOp = followupTargets(m, "opened").length;
+  return pageHeader(editing ? "再配信の予約を編集" : "再配信を予約", { back: { href: `#/campaigns/${m.id}`, label: "配信の詳細" }, description: `もとの配信: ${noTag(m.no)} ${esc(m.subject)}（${dt(m.sentAt)} 送信・開封 ${campaignStats(m).opened} / ${m.recipients.length}）${editing ? `　この予約の ID: ${noTag(editing.no)}` : "　予約すると新しい配信 ID が付きます"}` }) +
+    mockBand("1 回目の配信をもとに、対象（未開封者だけ／開封者だけ／全員）・日時・件名と本文を変えて予約できるか。予約は一覧から取り消し・編集できるか", "4・5") +
     `<div class="grid gap-4 lg:grid-cols-3"><div class="min-w-0 lg:col-span-2">${card(`<form data-form="followup" data-campaign="${m.id}" data-edit="${editing ? editing.id : ""}" class="flex flex-col gap-5">
-      <fieldset><legend class="mb-2 text-xs font-bold text-ink-soft">対象</legend><div class="grid gap-2 sm:grid-cols-2">
+      <fieldset><legend class="mb-2 text-xs font-bold text-ink-soft">対象</legend><div class="grid gap-2 sm:grid-cols-3">
         ${radioCard("target", "unopened", f.target === "unopened", "未開封者だけ", `${nUn} 人（1 回目を開いていない人）`)}
+        ${radioCard("target", "opened", f.target === "opened", "開封者だけ", `${nOp} 人（1 回目を開いた人。関心の高い人に別の案内を送るなど）`)}
         ${radioCard("target", "all", f.target === "all", "全員", `${nAll} 人（1 回目の宛先すべて）`)}
       </div></fieldset>
       <fieldset><legend class="mb-2 text-xs font-bold text-ink-soft">送る日時</legend><div class="flex flex-wrap items-center gap-2">
@@ -761,7 +828,7 @@ function mailView(m, c, { preview = false } = {}) {
       <div class="mt-6 rounded-lg bg-[#f0fdf4] p-4 text-center"><p class="text-sm text-[#166534]">新着物件を LINE でもお届けします</p><a class="mail-button mt-2 bg-[#06c755] text-white" href="#/line/${c.id}${q}">${icon("message-circle", 16)}LINE で最新情報を受け取る（友だち追加）</a></div>
       <p class="mt-6 text-sm">ご希望の条件が変わったときは、こちらから変更できます: <a class="font-bold text-[#23406d] underline" href="#/prefs/${c.id}${q}">希望条件を変更する</a></p>
       <hr class="my-6 border-[#e5e7eb]">
-      <p class="text-xs text-[#6b7280]">${esc(D.settings.senderName)}<br>${esc(D.settings.unsubscribeText)} <a class="underline" href="#" data-action="unsubscribe" data-id="${c.id}">配信停止</a></p>
+      <p class="text-xs text-[#6b7280]">${esc(D.settings.senderName)}<br>${esc(D.settings.unsubscribeText)} <a class="underline" href="#" data-action="unsubscribe" data-id="${c.id}">配信停止</a><br><span class="text-[#9ca3af]">配信番号 ${m.no}（お問い合わせの際にお伝えください）</span></p>
     </div>
     <div class="border-t border-dashed border-[#f59e0b] bg-[#fffbeb] px-5 py-2 text-xs text-[#92400e]">※（モックだけの注記）ここに 1px の透明な画像が入り、メールを開くと読み込まれて開封として記録されます。画像を表示しない設定・Gmail や Apple の画像の先読みで、実際とずれることがあります${preview ? "。プレビューでは記録しません" : ""}</div>
   </div>`;
@@ -880,6 +947,7 @@ function viewSettings() {
     `<div class="grid max-w-3xl gap-4">
       ${card(cardHeader("配信停止の文言", { description: "メールの最後に入ります（配信停止のリンクの前）" }) + `<form data-form="settings-unsub" class="flex flex-col gap-3 px-5 py-4"><textarea name="text" rows="3" class="${FIELD} py-2">${esc(D.settings.unsubscribeText)}</textarea><div>${btn("保存", { type: "submit" })}</div></form>`, "p-0")}
       ${card(cardHeader("LINE 連携", { description: "LINE Developers で作るチャネルの値を入れます（モックでは保存しません）" }) + `<div class="grid gap-4 px-5 py-4 sm:grid-cols-2">${field("チャネル ID", `<input class="${FIELD} h-9" placeholder="例: 1234567890">`)}${field("チャネルシークレット", `<input type="password" class="${FIELD} h-9" placeholder="（入力しても保存しません）" autocomplete="off">`)}</div><div class="px-5 pb-4">${note("本番では LINE ログインで本人を確かめてから友だち追加につなぎます。友だち追加の URL だけでは、誰が追加したかを確かめられません", "info")}</div>`, "p-0")}
+      ${card(cardHeader("物件概要書（PDF）の保存先", { description: "PDF はデータベースに入れず、外部のストレージに置きます。システムが持つのはダウンロード URL と読み取った項目だけ" }) + `<div class="grid gap-3 px-5 py-4 text-sm"><div class="flex flex-wrap items-center gap-2">${icon("hard-drive", 16, "text-primary")}<span class="font-bold">Google ドライブ</span>${badge("連携済み", "success", true)}<span class="text-muted">フォルダ: 物件概要書 › 年月ごと（例: ${esc(driveFolder())}）</span></div><div class="flex flex-wrap gap-2">${btn("連携をやり直す", { action: "mock-only", data: { text: "本番では Google アカウントで連携し、保存先のフォルダを選びます" }, size: "sm" })}${btn("保存先のフォルダを開く", { action: "mock-only", data: { text: "本番では Google ドライブのフォルダが開きます" }, size: "sm", iconName: "external-link" })}</div>${note("1 日に数十件の PDF を上げても、データベースは URL と項目の分しか増えません。PDF の容量は Google ドライブ側で持ちます", "info")}</div>`, "p-0")}
       ${card(cardHeader("開封の計測について") + `<div class="px-5 py-4">${note("開封はメールの中の 1px の画像の読み込みで数えます。画像を表示しない設定の人は「未開封」になり、Gmail・Apple（iCloud）の画像の先読みでは、本人が開いていなくても「開封」になることがあります。開封率は目安として見てください")}</div>`, "p-0")}
     </div>`;
 }
@@ -953,6 +1021,9 @@ const go = (hash) => {
   else location.hash = hash;
 };
 const nextCampaignId = () => `m${D.campaigns.length + 1}`;
+/** 配信の ID（7 桁の通し番号。再配信の予約にも付く。1 日に何百通も作っても、件名ではなく番号で探せるように） */
+const nextCampaignNo = () => Math.max(1000000, ...D.campaigns.map((m) => m.no || 0), ...D.followups.map((f) => f.no || 0)) + 1;
+const noTag = (no, cls = "") => `<span class="inline-flex items-center rounded border border-line bg-surface-subtle px-1.5 py-0.5 font-mono text-xs tabular-nums text-ink-soft ${cls}">${no}</span>`;
 
 function saveWizard(status, extra = {}) {
   const w = wizard;
@@ -963,7 +1034,7 @@ function saveWizard(status, extra = {}) {
     m = campaign(w.draftId);
     Object.assign(m, data);
   } else {
-    m = { id: nextCampaignId(), ...data };
+    m = { id: nextCampaignId(), no: nextCampaignNo(), ...data };
     D.campaigns.push(m);
   }
   wizard = null;
@@ -981,6 +1052,17 @@ const actions = {
   },
   "mock-only"(el) {
     toast(el.dataset.text, "info");
+  },
+  "prop-pdf-sample"(el) {
+    const i = Number(el.dataset.i);
+    startPdfReading(`${PDF_SAMPLES[i].name.replace("（例）", "")}_概要書.pdf`, 1536000 + i * 420000, i);
+  },
+  "prop-pdf-again"() {
+    ui.propNew = { stage: "upload", fileName: "", size: 0, sample: 0, extracted: null, docUrl: "", driveId: "" };
+    render();
+  },
+  "copy-text"(el) {
+    (navigator.clipboard ? navigator.clipboard.writeText(el.dataset.text) : Promise.reject()).then(() => toast("コピーしました"), () => toast("コピーできませんでした", "info"));
   },
   "toggle-published"(el) {
     const p = prop(el.dataset.id);
@@ -1146,7 +1228,10 @@ document.addEventListener("click", (ev) => {
 
 document.addEventListener("change", (ev) => {
   const el = ev.target;
-  if (el.dataset.change) {
+  if (el.dataset.change === "propPdf") {
+    const f = el.files && el.files[0];
+    if (f) startPdfReading(f.name, f.size, Math.abs(hashStr(f.name)) % PDF_SAMPLES.length);
+  } else if (el.dataset.change) {
     const key = el.dataset.change;
     if (key === "previewContact") wizard.previewContactId = el.value;
     else ui[key] = el.value;
@@ -1163,9 +1248,18 @@ document.addEventListener("change", (ev) => {
   }
 });
 
+document.addEventListener("dragover", (ev) => { if (ev.target.closest("[data-dropzone]")) ev.preventDefault(); });
+document.addEventListener("drop", (ev) => {
+  const z = ev.target.closest("[data-dropzone]");
+  if (!z) return;
+  ev.preventDefault();
+  const f = ev.dataTransfer.files && ev.dataTransfer.files[0];
+  if (f) startPdfReading(f.name, f.size, Math.abs(hashStr(f.name)) % PDF_SAMPLES.length);
+});
+
 document.addEventListener("input", (ev) => {
   const el = ev.target;
-  if (el.dataset.input === "contactQuery" || el.dataset.input === "wizPropQuery") {
+  if (["contactQuery", "wizPropQuery", "campaignQuery"].includes(el.dataset.input)) {
     const key = el.dataset.input;
     ui[key] = el.value;
     const pos = el.selectionStart;
@@ -1198,10 +1292,12 @@ document.addEventListener("submit", (ev) => {
       structure: fd.get("structure"),
       kind: fd.get("kind"),
       docUrl: fd.get("docUrl"),
+      pdfName: fd.get("pdfName") || "",
       memo: fd.get("memo"),
       published: fd.get("published") === "on",
       createdAt: now(),
     });
+    ui.propNew = { stage: "upload", fileName: "", size: 0, sample: 0, extracted: null, docUrl: "", driveId: "" };
     toast("物件を登録しました");
     go(`#/properties/${id}`);
   } else if (kind === "followup") {
@@ -1211,7 +1307,7 @@ document.addEventListener("submit", (ev) => {
       Object.assign(D.followups.find((f) => f.id === form.dataset.edit), data);
       toast("予約を直しました");
     } else {
-      D.followups.push({ id: `f${D.followups.length + 1}`, campaignId: m.id, status: "scheduled", ...data });
+      D.followups.push({ id: `f${D.followups.length + 1}`, no: nextCampaignNo(), campaignId: m.id, status: "scheduled", ...data });
       toast(`${dt(data.at)} に再配信を予約しました（${followupTargets(m, data.target).length} 人）`);
     }
     go(`#/campaigns/${m.id}`);
