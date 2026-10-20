@@ -16,6 +16,8 @@ const PDF_SAMPLES = [
 ];
 const PDF_FIELD_LABELS = { name: "物件名", kind: "種別", pref: "都道府県", city: "市区町村", addr: "番地", structure: "構造", year: "築年数" };
 function nextPropertyId() { return `p${String(D.properties.length + 1).padStart(2, "0")}`; }
+/** 物件 ID（P + 6 桁。配信の 7 桁の数字と見分けがつくように文字を頭に付ける） */
+const nextPropertyNo = () => `P${Math.max(100000, ...D.properties.map((p) => Number(String(p.no || "").slice(1)) || 0)) + 1}`;
 function driveFolder() { return `物件概要書 / ${D.today.slice(0, 7)}`; }
 /** PDF を受け取った体で「読み取り中」→ 項目を埋めた登録フォームへ（1.4 秒の待ちは本番の読み取りの代わり） */
 function startPdfReading(fileName, size, sample) {
@@ -87,6 +89,7 @@ const ui = {
   contactQuery: "",
   wizPropQuery: "",
   campaignQuery: "",
+  propQuery: "",
   propNew: { stage: "upload", fileName: "", size: 0, sample: 0, extracted: null, docUrl: "", driveId: "" },
   contactArea: "",
   contactLine: "",
@@ -151,6 +154,10 @@ function esc(v) {
 }
 const yen = (man) => (man == null ? "-" : `${Number(man).toLocaleString("ja-JP")} 万円`);
 const pct = (v) => (v == null ? "-" : `${Number(v).toFixed(1)}%`);
+/** 日付だけ（2026/10/15）。登録日・最後に送った日のように時刻が要らない所 */
+function dOnly(s) { return s ? s.slice(0, 10).replace(/-/g, "/") : "-"; }
+/** その物件を入れて送った配信のうち、いちばん新しい送信日時（送っていなければ null） */
+function lastSentAt(p) { return D.campaigns.filter((m) => m.status === "sent" && m.propertyIds.includes(p.id)).map((m) => m.sentAt).sort().pop() || null; }
 function dt(s) {
   if (!s) return "-";
   const [d, t] = s.split("T");
@@ -360,6 +367,8 @@ function inquiryItem(q) {
 
 function viewProperties() {
   let list = D.properties.slice();
+  const q = ui.propQuery.trim();
+  if (q) list = list.filter((p) => [p.no, p.name, p.pref, p.city, p.addr, p.kind, p.structure || ""].some((s) => s.includes(q)));
   if (ui.propArea) list = list.filter((p) => p.pref === ui.propArea);
   if (ui.propStructure) list = list.filter((p) => p.structure === ui.propStructure);
   const sorters = {
@@ -368,21 +377,23 @@ function viewProperties() {
     "price-desc": (a, b) => b.price - a.price,
     "yield-desc": (a, b) => b.yield - a.yield,
     "year-desc": (a, b) => (b.year ?? 0) - (a.year ?? 0),
+    "sent-desc": (a, b) => (lastSentAt(b) || "").localeCompare(lastSentAt(a) || ""),
   };
   list.sort(sorters[ui.propSort]);
   const areas = [...new Set(D.properties.map((p) => p.pref))];
   return pageHeader("物件", { description: "配信する物件の一覧。概要書の PDF は Google ドライブに置き、メールにはダウンロード URL を入れます", actions: btn("物件を登録", { variant: "primary", href: "#/properties/new", iconName: "plus" }) }) +
-    mockBand("物件の項目（所在地・価格・利回り・築年・構造・種別・概要書の URL）と、価格・利回り・築年での並べ替え、エリア・構造での絞り込み", "1") +
+    mockBand("物件 ID と項目（所在地・価格・利回り・築年・構造・種別）に加えて、概要書のリンク・最後にメールを送った日・登録日（PDF を上げて「登録する」を押した日）が一覧で分かるか。並べ替えと絞り込み", "1") +
     `<div class="mb-4 flex flex-wrap items-center gap-2">
+      <div class="relative">${icon("search", 16, "pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted")}<input data-input="propQuery" value="${esc(ui.propQuery)}" placeholder="ID・物件名・所在地・種別・構造で検索" class="${FIELD} h-9 w-72 max-w-full !rounded-full pl-9"></div>
       ${select("propArea", [["", "エリア: すべて"], ...areas.map((a) => [a, a])], ui.propArea, { cls: "!w-auto", data: 'data-change="propArea"' })}
       ${select("propStructure", [["", "構造: すべて"], ...STRUCTURES.map((s) => [s, s])], ui.propStructure, { cls: "!w-auto", data: 'data-change="propStructure"' })}
-      ${select("propSort", [["new", "並べ替え: 登録の新しい順"], ["price-asc", "価格の安い順"], ["price-desc", "価格の高い順"], ["yield-desc", "利回りの高い順"], ["year-desc", "築年の新しい順"]], ui.propSort, { cls: "!w-auto", data: 'data-change="propSort"' })}
-      <span class="text-sm text-muted tabular-nums">${list.length} 件</span>
+      ${select("propSort", [["new", "並べ替え: 登録の新しい順"], ["price-asc", "価格の安い順"], ["price-desc", "価格の高い順"], ["yield-desc", "利回りの高い順"], ["year-desc", "築年の新しい順"], ["sent-desc", "最後に送った日の新しい順"]], ui.propSort, { cls: "!w-auto", data: 'data-change="propSort"' })}
+      <span class="text-sm text-muted tabular-nums">${q || ui.propArea || ui.propStructure ? `${list.length} 件 / ${D.properties.length} 件` : `${list.length} 件`}</span>
     </div>` +
     table(
-      [{ label: "物件名" }, { label: "所在地" }, { label: "種別" }, { label: "構造", td: "whitespace-nowrap" }, { label: "築年", td: "whitespace-nowrap tabular-nums" }, { label: "価格", td: "whitespace-nowrap tabular-nums" }, { label: "利回り", td: "whitespace-nowrap tabular-nums" }, { label: "配信", td: "whitespace-nowrap" }, { label: "合う顧客", td: "whitespace-nowrap tabular-nums" }],
-      list.map((p) => [linkName(`#/properties/${p.id}`, p.name), `${esc(p.pref)} ${esc(p.city)}`, esc(p.kind), esc(p.structure || "-"), p.year ? `${p.year} 年` : "-", yen(p.price), pct(p.yield), p.published ? badge("使える", "success", true) : badge("使わない", "neutral", true), `${matchingContacts(p).length} 人`]),
-      { minW: "min-w-[900px]" },
+      [{ label: "ID", td: "whitespace-nowrap" }, { label: "物件名" }, { label: "所在地" }, { label: "種別" }, { label: "構造", td: "whitespace-nowrap" }, { label: "築年", td: "whitespace-nowrap tabular-nums" }, { label: "価格", td: "whitespace-nowrap tabular-nums" }, { label: "利回り", td: "whitespace-nowrap tabular-nums" }, { label: "概要書", td: "whitespace-nowrap" }, { label: "最後に送った日", td: "whitespace-nowrap tabular-nums" }, { label: "登録日", td: "whitespace-nowrap tabular-nums" }, { label: "配信", td: "whitespace-nowrap" }, { label: "合う顧客", td: "whitespace-nowrap tabular-nums" }],
+      list.map((p) => [`<a href="#/properties/${p.id}" class="font-mono text-sm tabular-nums text-primary hover:underline">${p.no}</a>`, linkName(`#/properties/${p.id}`, p.name), `${esc(p.pref)} ${esc(p.city)}`, esc(p.kind), esc(p.structure || "-"), p.year ? `${p.year} 年` : "-", yen(p.price), pct(p.yield), `<a href="${esc(p.docUrl)}" target="_blank" rel="noopener" title="${esc(p.docUrl)}" class="inline-flex items-center gap-1 text-sm text-primary hover:underline">${icon("file-text", 14)}概要書</a>`, lastSentAt(p) ? dOnly(lastSentAt(p)) : '<span class="text-muted">未送信</span>', dOnly(p.createdAt), p.published ? badge("使える", "success", true) : badge("使わない", "neutral", true), `${matchingContacts(p).length} 人`]),
+      { minW: "min-w-[1260px]", empty: q ? `「${esc(q)}」に合う物件はありません` : "まだありません" },
     );
 }
 
@@ -422,6 +433,7 @@ function viewPropertyNew() {
       </div>`, "p-0 mb-4") +
     card(cardHeader("PDF から読み取った項目", { description: "物件名・種別・都道府県・市区町村・番地・構造・築年数は自動で入っています" }) + `<div class="px-5 pt-4">${uncertainNote}</div><form data-form="property" class="grid gap-4 px-5 py-4 md:grid-cols-2">
       <input type="hidden" name="docUrl" value="${esc(st.docUrl)}"><input type="hidden" name="pdfName" value="${esc(st.fileName)}">
+      <div class="text-sm md:col-span-2">登録すると物件 ID ${noTag(nextPropertyNo())} が付きます（登録日は「登録する」を押した日時）</div>
       ${field(`物件名${auto("name")}`, `<input name="name" required class="${cls("name")}" value="${esc(x.name)}">`)}
       ${field(`種別${auto("kind")}`, select("kind", opt(KINDS), x.kind))}
       ${field(`都道府県${auto("pref")}`, select("pref", opt(PREFS_ALL), x.pref))}
@@ -450,12 +462,14 @@ function viewProperty(id) {
     ["築年", p.year ? `${p.year} 年` : "-"],
     ["価格", yen(p.price)],
     ["利回り", pct(p.yield)],
+    ["登録日", `${dOnly(p.createdAt)}（PDF を上げて「登録する」を押した日）`],
+    ["最後にメールを送った日", lastSentAt(p) ? `${dt(lastSentAt(p))}（${used.filter((m) => m.status === "sent").length} 回送信）` : "まだ送っていません"],
     ["概要書", `<a href="${esc(p.docUrl)}" target="_blank" rel="noopener" class="inline-flex items-center gap-1 text-primary hover:underline break-all">${icon("external-link", 14)}${esc(p.docUrl)}</a>${p.pdfName ? `<span class="mt-0.5 block text-xs text-muted">${esc(p.pdfName)}（Google ドライブ › ${esc(driveFolder())}）</span>` : ""}`],
     ["メモ", p.memo || "-"],
   ];
   return pageHeader(p.name, {
     back: { href: "#/properties", label: "物件の一覧" },
-    description: p.published ? "配信に使えます" : "配信に使わない物件です（配信の作成では選べません）",
+    description: `物件 ID ${noTag(p.no)}　${p.published ? "配信に使えます" : "配信に使わない物件です（配信の作成では選べません）"}`,
     actions: (p.published ? btn("この物件で配信を作る", { variant: "primary", action: "wizard-from-property", data: { id: p.id }, iconName: "send" }) : "") + btn(p.published ? "配信に使わない" : "配信に使う", { action: "toggle-published", data: { id: p.id } }),
   }) +
     mockBand("物件の中身と、希望条件に合う顧客の人数（＝自動で選ばれる宛先）が分かるか", "1・2") +
@@ -557,28 +571,28 @@ function dlRows(rows) {
 function viewCampaigns() {
   const q = ui.campaignQuery.trim();
   let list = D.campaigns.slice().sort((a, b) => (b.sentAt || b.scheduledAt || "9").localeCompare(a.sentAt || a.scheduledAt || "9"));
-  if (q) list = list.filter((m) => String(m.no).includes(q) || m.subject.includes(q) || m.propertyIds.some((pid) => prop(pid).name.includes(q)));
+  if (q) list = list.filter((m) => String(m.no).includes(q) || m.subject.includes(q) || m.propertyIds.some((pid) => prop(pid).name.includes(q) || prop(pid).no.includes(q)));
   return pageHeader("配信", { description: "物件の一斉送信。送信済み・予約・下書き。配信には 7 桁の ID が付きます", actions: btn("新規配信", { variant: "primary", href: "#/campaigns/new", iconName: "plus" }) }) +
-    mockBand("配信ごとの ID・状態・送信数・開封率・問合せ・再配信の予約が一覧で分かるか。1 日に何百通も作っても ID で探せるか", "3・4") +
+    mockBand("配信ごとの 配信 ID・もとの物件（物件 ID）・状態・送信数・開封率・問合せ・再配信の予約が一覧で分かるか。1 日に何百通も作っても、配信 ID や物件 ID で探せるか", "3・4") +
     `<div class="mb-4 flex flex-wrap items-center gap-3">
-      <div class="relative">${icon("search", 16, "pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted")}<input data-input="campaignQuery" value="${esc(ui.campaignQuery)}" placeholder="ID・件名・物件名で検索" class="${FIELD} h-9 w-72 max-w-full !rounded-full pl-9"></div>
+      <div class="relative">${icon("search", 16, "pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted")}<input data-input="campaignQuery" value="${esc(ui.campaignQuery)}" placeholder="配信 ID・件名・物件 ID・物件名で検索" class="${FIELD} h-9 w-72 max-w-full !rounded-full pl-9"></div>
       <span class="text-sm text-muted">${q ? `${list.length} 件 / ${D.campaigns.length} 件` : `${D.campaigns.length} 件`}</span></div>` +
     table(
-      [{ label: "ID", td: "whitespace-nowrap" }, { label: "件名" }, { label: "状態", td: "whitespace-nowrap" }, { label: "物件", td: "whitespace-nowrap tabular-nums" }, { label: "宛先", td: "whitespace-nowrap tabular-nums" }, { label: "開封率", td: "whitespace-nowrap tabular-nums" }, { label: "問合せ", td: "whitespace-nowrap tabular-nums" }, { label: "送信・予約", td: "whitespace-nowrap tabular-nums" }],
+      [{ label: "配信 ID", td: "whitespace-nowrap" }, { label: "件名" }, { label: "状態", td: "whitespace-nowrap" }, { label: "もとの物件", td: "whitespace-nowrap" }, { label: "宛先", td: "whitespace-nowrap tabular-nums" }, { label: "開封率", td: "whitespace-nowrap tabular-nums" }, { label: "問合せ", td: "whitespace-nowrap tabular-nums" }, { label: "送信・予約", td: "whitespace-nowrap tabular-nums" }],
       list.map((m) => {
         const s = campaignStats(m);
         return [
           `<a href="#/campaigns/${m.id}" class="font-mono text-sm tabular-nums text-primary hover:underline">${m.no}</a>`,
           `${linkName(`#/campaigns/${m.id}`, m.subject)}${s.followups.map((f) => `<div class="mt-1">${badge(`再配信の予約 ${f.no}（${dt(f.at)}）`, "info")}</div>`).join("")}`,
           campaignBadge(m),
-          `${m.propertyIds.length} 件`,
+          m.propertyIds.map((pid) => `<a href="#/properties/${pid}" title="${esc(prop(pid).name)}" class="mr-1 inline-flex items-center rounded border border-line bg-surface-subtle px-1.5 py-0.5 font-mono text-xs tabular-nums text-primary hover:underline">${prop(pid).no}</a>`).join("") + `<span class="text-xs text-muted">${m.propertyIds.length} 件</span>`,
           `${m.recipients.length} 人`,
           m.status === "sent" ? rateBar(s.rate) : "-",
           m.status === "sent" ? `${s.inquiries}` : "-",
           dt(m.sentAt || m.scheduledAt),
         ];
       }),
-      { minW: "min-w-[960px]", empty: q ? `「${esc(q)}」に合う配信はありません` : "まだありません" },
+      { minW: "min-w-[1040px]", empty: q ? `「${esc(q)}」に合う配信はありません` : "まだありません" },
     );
 }
 
@@ -608,7 +622,7 @@ function viewCampaign(id) {
     mockBand("配信 ID・送信数・開封数・開封率・問合せ・LINE 追加と、宛先ごとの開封／未開封。「再配信を予約」から未開封者だけに送れるか", "3・4・5") +
     `<div class="mb-4 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-line bg-surface px-5 py-3 text-sm text-ink-soft shadow-sm">${noTag(m.no)}${campaignBadge(m)}
       <span class="inline-flex items-center gap-1.5">${icon(m.status === "sent" ? "send" : "clock", 14, "text-muted")}${m.status === "sent" ? `送信 ${dt(m.sentAt)}` : m.status === "scheduled" ? `予約 ${dt(m.scheduledAt)}` : "下書き"}</span>
-      <span class="inline-flex items-center gap-1.5">${icon("building-2", 14, "text-muted")}物件 ${m.propertyIds.map((pid) => `<a href="#/properties/${pid}" class="text-primary hover:underline">${esc(prop(pid).name)}</a>`).join("、")}</span>
+      <span class="inline-flex items-center gap-1.5">${icon("building-2", 14, "text-muted")}物件 ${m.propertyIds.map((pid) => `<a href="#/properties/${pid}" class="text-primary hover:underline">${noTag(prop(pid).no, "mr-1")}${esc(prop(pid).name)}</a>`).join("、")}</span>
       ${s.followups.length ? badge(`予約 ${s.followups.length} 件`, "info", true) : ""}</div>
     <div class="grid grid-cols-2 gap-4 md:grid-cols-5">
       ${kpi("送信数", s.sent, m.status === "sent" ? "" : "まだ送っていません", "send")}
@@ -727,12 +741,12 @@ function wizNav(w, { next = "次へ", nextDisabled = false } = {}) {
 function wizStep1(w) {
   const all = D.properties.filter((p) => p.published);
   const q = ui.wizPropQuery.trim();
-  const list = q ? all.filter((p) => [p.name, p.pref, p.city, p.addr, p.kind, p.structure || ""].some((s) => s.includes(q))) : all;
+  const list = q ? all.filter((p) => [p.no, p.name, p.pref, p.city, p.addr, p.kind, p.structure || ""].some((s) => s.includes(q))) : all;
   const picked = all.filter((p) => w.propertyIds.includes(p.id));
   return mockBand("配信する物件を選べるか（複数可）。配信に使わない物件は出ない。検索で絞っても、選んだ物件は保たれる", "2") +
     `<p class="mb-3 text-sm text-ink-soft">配信する物件を選びます（複数可）。選んだ物件が、顧客ごとに「希望条件に合うもの」だけメールに入ります。</p>
     <div class="mb-3 flex flex-wrap items-center gap-3">
-      <div class="relative">${icon("search", 16, "pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted")}<input data-input="wizPropQuery" value="${esc(ui.wizPropQuery)}" placeholder="物件名・所在地・種別・構造で検索" class="${FIELD} h-9 w-72 max-w-full !rounded-full pl-9"></div>
+      <div class="relative">${icon("search", 16, "pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted")}<input data-input="wizPropQuery" value="${esc(ui.wizPropQuery)}" placeholder="ID・物件名・所在地・種別・構造で検索" class="${FIELD} h-9 w-72 max-w-full !rounded-full pl-9"></div>
       <span class="text-sm text-muted">${q ? `${list.length} 件 / ${all.length} 件` : `${all.length} 件`}</span>
       <span class="text-sm">選択中 <b>${picked.length}</b> 件${picked.length ? `<span class="text-muted">（${esc(picked.map((p) => p.name).join("、"))}）</span>` : ""}</span>
     </div>
@@ -740,7 +754,7 @@ function wizStep1(w) {
     <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">${list.map((p) => {
       const on = w.propertyIds.includes(p.id);
       return `<label class="flex cursor-pointer gap-3 rounded-xl border p-4 ${on ? "border-primary bg-primary-subtle" : "border-line bg-surface hover:bg-surface-subtle"} shadow-sm"><input type="checkbox" data-action="wiz-prop" data-id="${p.id}" ${on ? "checked" : ""} class="mt-1">
-        <span class="min-w-0"><span class="block font-bold">${esc(p.name)}</span><span class="block text-xs text-muted">${esc(p.pref)} ${esc(p.city)} ／ ${esc(p.kind)} ／ ${esc(p.structure || "-")} ／ ${p.year ? `${p.year} 年` : "-"}</span>
+        <span class="min-w-0"><span class="block font-bold">${noTag(p.no, "mr-1.5")}${esc(p.name)}</span><span class="block text-xs text-muted">${esc(p.pref)} ${esc(p.city)} ／ ${esc(p.kind)} ／ ${esc(p.structure || "-")} ／ ${p.year ? `${p.year} 年` : "-"}</span>
         <span class="mt-1 block text-sm tabular-nums">${yen(p.price)} ・ 利回り ${pct(p.yield)}</span><span class="mt-1 block text-xs text-muted">合う顧客 ${matchingContacts(p).length} 人</span></span></label>`;
     }).join("")}</div>` + wizNav(w, { nextDisabled: w.propertyIds.length === 0 });
 }
@@ -813,7 +827,7 @@ function mailView(m, c, { preview = false } = {}) {
   const ps = fits.length ? fits : m.propertyIds.map(prop);
   const q = m.id === "preview" ? "" : `?m=${m.id}`;
   const rows = ps
-    .map((p) => `<tr class="border-t border-[#e5e7eb] align-top"><td class="px-3 py-3"><div class="font-bold text-[#111827]">${esc(p.name)}</div><div class="text-xs text-[#6b7280]">${esc(p.pref)} ${esc(p.city)}</div>
+    .map((p) => `<tr class="border-t border-[#e5e7eb] align-top"><td class="px-3 py-3"><div class="font-bold text-[#111827]">${esc(p.name)}</div><div class="text-xs text-[#6b7280]">${esc(p.pref)} ${esc(p.city)}　物件番号 ${p.no}</div>
       <div class="mt-2 flex flex-wrap gap-2"><a class="mail-button border border-[#cbd5e1] bg-white !px-2.5 !py-1.5 !text-xs !font-medium text-[#23406d]" href="${esc(p.docUrl)}" target="_blank" rel="noopener">${icon("file-text", 14)}概要書を見る</a><a class="mail-button bg-[#23406d] !px-2.5 !py-1.5 !text-xs text-white" href="#/inquiry/${p.id}/${c.id}${q}">${icon("message-square", 14)}この物件を問い合わせる</a></div></td>
       <td class="px-3 py-3 whitespace-nowrap tabular-nums">${pct(p.yield)}</td><td class="px-3 py-3 whitespace-nowrap tabular-nums">${yen(p.price)}</td><td class="px-3 py-3 whitespace-nowrap tabular-nums">${p.year ? `${p.year} 年` : "-"}</td><td class="px-3 py-3 whitespace-nowrap">${esc(p.structure || "-")}</td></tr>`)
     .join("");
@@ -868,7 +882,7 @@ function viewInquiry(pid, cid, query) {
   const dl = [["所在地", `${p.pref} ${p.city} ${p.addr}`], ["種別", p.kind], ["価格", yen(p.price)], ["利回り", pct(p.yield)], ["築年", p.year ? `${p.year} 年` : "-"], ["構造", p.structure || "-"]];
   return publicShell(
     mockBand("メールの「この物件を問い合わせる」から開くページ。氏名・メールは入力済みで、要望を書いて送れるか。送ると社内担当に届き、配信と顧客の詳細の問合せが 1 件増える", "6") +
-      card(`<h1 class="text-xl font-bold">${esc(p.name)}</h1><dl class="mt-4 grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">${dl.map(([k, v]) => `<div class="flex gap-3"><dt class="w-16 shrink-0 text-xs font-bold text-muted">${k}</dt><dd class="tabular-nums">${esc(v)}</dd></div>`).join("")}</dl>
+      card(`<h1 class="text-xl font-bold">${esc(p.name)}</h1><p class="mt-1 text-xs text-muted">物件番号 ${p.no}</p><dl class="mt-4 grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">${dl.map(([k, v]) => `<div class="flex gap-3"><dt class="w-16 shrink-0 text-xs font-bold text-muted">${k}</dt><dd class="tabular-nums">${esc(v)}</dd></div>`).join("")}</dl>
         <a href="${esc(p.docUrl)}" target="_blank" rel="noopener" class="mt-3 inline-flex items-center gap-1 text-sm text-primary hover:underline">${icon("file-text", 14)}概要書を見る</a>
         <form data-form="inquiry" data-property="${p.id}" data-contact="${c.id}" data-campaign="${esc(query.m || "")}" class="mt-6 flex flex-col gap-4 border-t border-line pt-5">
           <h2 class="text-base font-bold">この物件を問い合わせる</h2>
@@ -1259,7 +1273,7 @@ document.addEventListener("drop", (ev) => {
 
 document.addEventListener("input", (ev) => {
   const el = ev.target;
-  if (["contactQuery", "wizPropQuery", "campaignQuery"].includes(el.dataset.input)) {
+  if (["contactQuery", "wizPropQuery", "campaignQuery", "propQuery"].includes(el.dataset.input)) {
     const key = el.dataset.input;
     ui[key] = el.value;
     const pos = el.selectionStart;
@@ -1282,6 +1296,7 @@ document.addEventListener("submit", (ev) => {
     const id = `p${String(D.properties.length + 1).padStart(2, "0")}`;
     D.properties.push({
       id,
+      no: nextPropertyNo(),
       name: fd.get("name"),
       pref: fd.get("pref"),
       city: fd.get("city"),
