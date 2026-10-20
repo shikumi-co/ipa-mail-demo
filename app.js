@@ -71,6 +71,7 @@ function newWizard(propertyIds = [], from = null) {
     propertyIds: [...propertyIds],
     mode: "auto",
     filters: { areas: [], price: "", yieldMin: "", yearMin: "", structures: [], tags: [] },
+    filtersAuto: false,
     excluded: new Set(),
     manualPicked: null,
     subject: base.subject || "",
@@ -768,7 +769,13 @@ function wizStep2(w) {
     const on = f[key].includes(v);
     return `<button data-action="wiz-chip" data-key="${key}" data-value="${esc(v)}" aria-pressed="${on}" class="inline-flex h-7 items-center gap-1 rounded-full border px-3 text-xs font-medium ${on ? "border-primary bg-primary text-white" : "border-line-strong bg-surface text-ink-soft hover:bg-surface-subtle"}">${on ? icon("check", 12) : ""}${esc(v)}</button>`;
   }).join("")}</div>`;
-  const manual = w.mode === "manual" ? card(`<div class="grid gap-4 md:grid-cols-2">
+  const basis = w.propertyIds.map(prop);
+  const basisNote = w.mode === "manual" && basis.length
+    ? note(w.filtersAuto
+        ? `選んだ物件 ${basis.map((p) => `${noTag(p.no)} ${esc(p.name)}`).join("、")} の値で埋めています（物件は ${yen(basis[0].price)}・${pct(basis[0].yield)}${basis[0].year ? `・${basis[0].year} 年築` : ""}。価格・利回り・築年は選べる刻みに丸めています）。変えるたびに人数がすぐ変わります`
+        : `条件を変えています。${btn("選んだ物件の値に戻す", { size: "sm", action: "wiz-fill", iconName: "wand-2", extra: "ml-1" })}`, "info") + '<div class="mb-3"></div>'
+    : "";
+  const manual = w.mode === "manual" ? basisNote + card(`<div class="grid gap-4 md:grid-cols-2">
       ${group("エリア（希望エリアに含む顧客）", chips("areas", PREFS_ALL))}
       ${group("構造（希望の構造に含む顧客）", chips("structures", STRUCTURES))}
       ${field("価格（この価格が希望の範囲に入る顧客）", select("price", [["", "指定しない"], ...PRICE_STEPS.map((v) => [v, yen(v)])], f.price, { data: 'data-wiz-filter="price"' }))}
@@ -1098,6 +1105,8 @@ const actions = {
     const id = el.dataset.id;
     wizard.propertyIds = wizard.propertyIds.includes(id) ? wizard.propertyIds.filter((x) => x !== id) : [...wizard.propertyIds, id];
     wizard.excluded = new Set();
+    // 手で絞るの条件を自分で変えていなければ、選び直した物件の値で入れ直す（空にしておけば、手で絞るに切り替えたときに埋まる）
+    if (wizard.filtersAuto || !wizard.propertyIds.length) wizard.filters = { areas: [], price: "", yieldMin: "", yearMin: "", structures: [], tags: [] };
     render();
   },
   "wiz-go"(el) {
@@ -1130,6 +1139,7 @@ const actions = {
     const { key, value } = el.dataset;
     const arr = wizard.filters[key];
     wizard.filters[key] = arr.includes(value) ? arr.filter((v) => v !== value) : [...arr, value];
+    wizard.filtersAuto = false;
     render();
   },
   "wiz-fill"() {
@@ -1137,6 +1147,7 @@ const actions = {
     if (!ps.length) return toast("先に物件を選んでください", "info");
     const p = ps[0];
     wizard.filters = { areas: [...new Set(ps.map((x) => x.pref))], price: String(PRICE_STEPS.find((v) => v >= p.price) ?? ""), yieldMin: String(Math.floor(p.yield)), yearMin: p.year ? String([...YEAR_STEPS].reverse().find((v) => v <= p.year) ?? "") : "", structures: p.structure ? [p.structure] : [], tags: [] };
+    wizard.filtersAuto = true;
     render();
   },
   "wiz-clear"() {
@@ -1252,6 +1263,7 @@ document.addEventListener("change", (ev) => {
     render();
   } else if (el.dataset.wizFilter) {
     wizard.filters[el.dataset.wizFilter] = el.value;
+    wizard.filtersAuto = false;
     render();
   } else if (el.hasAttribute("data-rerender-radio")) {
     // 対象のラジオの見た目だけ変える（入力中の件名・本文は消さない）
