@@ -739,11 +739,11 @@ function wizNav(w, { next = "次へ", nextDisabled = false } = {}) {
 }
 
 function wizStep1(w) {
-  const all = D.properties.filter((p) => p.published);
+  const all = D.properties.filter((p) => p.published).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const q = ui.wizPropQuery.trim();
   const list = q ? all.filter((p) => [p.no, p.name, p.pref, p.city, p.addr, p.kind, p.structure || ""].some((s) => s.includes(q))) : all;
   const picked = all.filter((p) => w.propertyIds.includes(p.id));
-  return mockBand("配信する物件を選べるか（複数可）。配信に使わない物件は出ない。検索で絞っても、選んだ物件は保たれる", "2") +
+  return mockBand("配信する物件を選べるか（複数可）。登録の新しい順に並び、カードに物件 ID・登録日・価格・利回りが出る。配信に使わない物件は出ない。検索で絞っても、選んだ物件は保たれる", "2") +
     `<p class="mb-3 text-sm text-ink-soft">配信する物件を選びます（複数可）。選んだ物件が、顧客ごとに「希望条件に合うもの」だけメールに入ります。</p>
     <div class="mb-3 flex flex-wrap items-center gap-3">
       <div class="relative">${icon("search", 16, "pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted")}<input data-input="wizPropQuery" value="${esc(ui.wizPropQuery)}" placeholder="ID・物件名・所在地・種別・構造で検索" class="${FIELD} h-9 w-72 max-w-full !rounded-full pl-9"></div>
@@ -755,7 +755,7 @@ function wizStep1(w) {
       const on = w.propertyIds.includes(p.id);
       return `<label class="flex cursor-pointer gap-3 rounded-xl border p-4 ${on ? "border-primary bg-primary-subtle" : "border-line bg-surface hover:bg-surface-subtle"} shadow-sm"><input type="checkbox" data-action="wiz-prop" data-id="${p.id}" ${on ? "checked" : ""} class="mt-1">
         <span class="min-w-0"><span class="block font-bold">${noTag(p.no, "mr-1.5")}${esc(p.name)}</span><span class="block text-xs text-muted">${esc(p.pref)} ${esc(p.city)} ／ ${esc(p.kind)} ／ ${esc(p.structure || "-")} ／ ${p.year ? `${p.year} 年` : "-"}</span>
-        <span class="mt-1 block text-sm tabular-nums">${yen(p.price)} ・ 利回り ${pct(p.yield)}</span><span class="mt-1 block text-xs text-muted">合う顧客 ${matchingContacts(p).length} 人</span></span></label>`;
+        <span class="mt-1 block text-sm tabular-nums">${yen(p.price)} ・ 利回り ${pct(p.yield)}</span><span class="mt-1 block text-xs text-muted tabular-nums">登録 ${dOnly(p.createdAt)}${lastSentAt(p) ? ` ／ 最後に送った日 ${dOnly(lastSentAt(p))}` : " ／ 未送信"} ／ 合う顧客 ${matchingContacts(p).length} 人</span></span></label>`;
     }).join("")}</div>` + wizNav(w, { nextDisabled: w.propertyIds.length === 0 });
 }
 
